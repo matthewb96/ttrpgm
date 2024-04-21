@@ -1,0 +1,28 @@
+name: monster
+schema:
+  name: text
+  health: integer
+  stress: integer
+  tier: integer
+  difficulty: integer
+  type: text
+  basic_attack: text
+  attack_modifier: integer
+  minor_threshold: integer
+  major_threshold: integer
+  severe_threshold: integer
+  location: text
+  tactics: text
+  experience: text
+  features: long_text
+  description: long_text
+
+hidden_columns:
+  - tactics
+  - experience
+  - features
+  - description
+
+group_count_columns:
+  - type
+  - tier

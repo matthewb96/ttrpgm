@@ -14,7 +14,7 @@ from ttrpgm import data
 ##### CONSTANTS #####
 
 LOG = logging.getLogger(__name__)
-
+TEMPLATE_FILES = {"monster": pathlib.Path("templates/monster.yml")}
 
 ##### CLASSES & FUNCTIONS #####
 
@@ -22,23 +22,14 @@ LOG = logging.getLogger(__name__)
 def main():
     app = dash.Dash(__name__, external_stylesheets=[dbc.themes.BOOTSTRAP])
 
-    template = data.Template(
-        name="monster",
-        schema={
-            "name": data.InputType.TEXT,
-            "health": data.InputType.INTEGER,
-            "stress": data.InputType.INTEGER,
-            "location": data.InputType.TEXT,
-            "features": data.InputType.LONG_TEXT,
-        },
-        hidden_columns=["features"],
-    )
+    tabs = []
+    for _, path in TEMPLATE_FILES.items():
+        template = data.Template.load_yaml(path)
 
-    datatable = data.DataTable(pathlib.Path(), template)
+        dashboard = data.DataDashboard(pathlib.Path(), template)
+        tabs.append(dashboard.create())
 
-    table = datatable.create()
-
-    app.layout = dash.html.Div([dash.html.Div(children="Hello World"), table])
+    app.layout = dash.html.Div(tabs)
     app.run()
 
 

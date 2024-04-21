@@ -1,29 +1,60 @@
 <table style="width:100%; font-size:12pt">
     <tr>
-        <td>{{basic_attack}}</td>
-        <td>Attack: <b>{{attack_modifier}}</b></td>
-        <td>Minor <b>{{minor_threshold}}</b> | Major <b>{{major_threshold}}</b> | Severe
+        <td colspan="2">{{basic_attack}}</td>
+        <td>Attack: {% if attack_modifier %}<b>{{"%+.0f" % attack_modifier}}</b>{% endif %}</td>
+        <td>Thresholds <b>{{minor_threshold}}</b> | <b>{{major_threshold}}</b> |
             <b>{{severe_threshold}}</b>
         </td>
     </tr>
     <tr>
+        <td>Tier: {{tier}}</td>
         <td>HP: <b>{{health}}</b></td>
         <td>Stress: <b>{{stress}}</b></td>
         <td>Difficulty: <b>{{difficulty}}</b></b></td>
+    </tr>
+    <tr>
+        <td>Type: {{type}}</td>
+        <td colspan="3">Experience: {{experience}}</td>
     </tr>
 </table>
 
 <table style="width:100%; font-size: 10pt">
     <tr>
-        <th>Features</th>
+        <th>
+            <h6>Features</h6>
+        </th>
     </tr>
     <tr>
         <td>{{features}}</td>
     </tr>
     <tr>
-        <th>Description</th>
+        <th>
+            <h6>Description</h6>
+        </th>
+    </tr>
+    <tr>
+        <td>Motives and Tactics: <i>{{tactics}}</i></td>
     </tr>
     <tr>
         <td>{{description}}</td>
     </tr>
+</table>
+
+<table style="width: 100%; font-size: 10pt;">
+    <tr>
+        <th>Adversary</th>
+        <th>Health</th>
+        <th>Stress</th>
+    </tr>
+    {% for number in range(count) %}
+    <tr>
+        <td>{{name}} {{ number + 1 }}</td>
+        {% if health %}
+        <td>{% for i in range(health) %}<input type="checkbox">{% endfor %}</td>
+        {% endif %}
+        {% if stress %}
+        <td>{% for i in range(stress) %}<input type="checkbox">{% endfor %}</td>
+        {% endif %}
+    </tr>
+    {% endfor %}
 </table>
