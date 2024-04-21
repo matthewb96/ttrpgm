@@ -12,9 +12,10 @@ different RPG systems.
   - [x] Encounter print functionality
   - [ ] Clear selection
   - [ ] Delete monster
+  - [x] Add aggregate value for groups to template so the group section can display the count of monsters of each type for example
 - [ ] Item data, with same functionality as monsters
 - [ ] Equipment data
-- [ ] Define template system - *in progress*
-  - [ ] Template for input forms - *in progress*
+- [x] Define template system
+  - [x] Template for input forms
   - [x] Template for output displays
 - [ ] Define profiles which contain different stores for data, items etc. and different templates

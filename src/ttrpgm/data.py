@@ -3,6 +3,7 @@
 
 ##### IMPORTS #####
 
+import collections
 import dataclasses
 import enum
 import json
@@ -10,6 +11,7 @@ import logging
 import pathlib
 import re
 from typing import Any
+import warnings
 
 import caf.toolkit as ctk
 import dash
@@ -53,6 +55,7 @@ class Template(ctk.BaseConfig):
     name: str
     schema: dict[str, InputType | DropDownType]
     hidden_columns: list[str]
+    group_count_columns: list[str]
 
     @pydantic.field_validator("name", mode="after")
     @classmethod
@@ -73,7 +76,7 @@ class Template(ctk.BaseConfig):
 
         return new_dict
 
-    @pydantic.field_validator("hidden_columns", mode="after")
+    @pydantic.field_validator("hidden_columns", "group_count_columns", mode="after")
     @classmethod
     def check_hidden_columns(
         cls, values: list[str], info: pydantic.ValidationInfo
@@ -82,7 +85,7 @@ class Template(ctk.BaseConfig):
         for name in values:
             name = name.strip().lower()
             if name not in info.data["schema"]:
-                raise ValueError("hidden column ({name}) not found in schema")
+                raise ValueError("column ({name}) not found in schema")
             new_values.append(name)
 
         return new_values
@@ -117,13 +120,13 @@ def _dcc_input(
     return dbc.Row([dbc.Label(name.title(), width=2), dbc.Col(widget, width=10)])
 
 
-class DataTable:
+class DataDashboard:
 
     def __init__(self, folder: pathlib.Path, template: Template) -> None:
 
         self.template = template
         self.name = template.name
-        self.data_path = folder / f"{template.name}.json"
+        self.data_path = folder / f"data/{template.name}.json"
 
         self.data: dict = {}
         if self.data_path.is_file():
@@ -131,7 +134,7 @@ class DataTable:
                 self.data = json.load(file)
 
         template_env = jinja2.Environment(
-            loader=jinja2.FileSystemLoader(self.data_path.parent / "templates")
+            loader=jinja2.FileSystemLoader(folder / "templates")
         )
         self.display_template = template_env.get_template(f"{self.name}.html")
 
@@ -141,6 +144,8 @@ class DataTable:
             "datatable": f"{self.name}-datatable",
             "modal-button": f"{self.name}-modal-button",
             "modal": f"{self.name}-modal",
+            "delete-modal-button": f"{self.name}-delete-modal-button",
+            "delete-modal": f"{self.name}-delete-modal",
             "group-table": f"{self.name}-group-table",
         }
 
@@ -153,11 +158,28 @@ class DataTable:
     def get_data(self, name: str) -> dict:
         return self.data[name.strip().lower()]
 
+    def backup_database(self) -> None:
+        new_path = self.data_path.with_name(self.data_path.stem + ".backup")
+        if new_path.is_file():
+            new_path.unlink()
+        self.data_path.rename(new_path)
+
+    def remove_data(self, name: str) -> None:
+        removed = self.data.pop(name, None)
+        if removed is None:
+            warnings.warn(f"{name!r} not in data so nothing is removed", RuntimeWarning)
+            return
+
+        self.backup_database()
+        with open(self.data_path, "wt", encoding="utf-8") as file:
+            json.dump(self.data, file)
+
     def update_data(self, name: str, values: dict):
         # TODO Add data validation
         name = name.strip().lower()
         self.data[name] = values
 
+        self.backup_database()
         with open(self.data_path, "wt", encoding="utf-8") as file:
             json.dump(self.data, file)
 
@@ -301,24 +323,90 @@ class DataTable:
 
             if type_ == InputType.LONG_TEXT:
                 data[name] = markdown.markdown(value)
+            elif type_ == InputType.INTEGER:
+                data[name] = int(value)
 
         return self.display_template.render(**data)
 
-    def create(self):
-        table = dash_table.DataTable(
-            [{"id": i, **j} for i, j in self.data.items()],
-            columns=[
-                {"id": i, "name": i.title()}
-                for i in self.template.schema
-                if i not in self.template.hidden_columns
-            ],
-            id=self.widget_ids["datatable"],
-            sort_action="native",
-            filter_action="native",
-            row_selectable=True,
+    def _group_count(
+        self, selected_ids: list[str], counts: list[str]
+    ) -> dict[str, dict[str, int]]:
+        value_count: dict[str, dict[str, int]] = collections.defaultdict(
+            lambda: collections.defaultdict(lambda: 0)
         )
-        modal, add_button = self.create_input_form()
 
+        for name, count in zip(selected_ids, counts):
+            data = self.get_data(name)
+
+            for nm in self.template.group_count_columns:
+                value_count[nm][str(data.get(nm))] += int(count)
+
+        return value_count
+
+    def _group_count_table(self, group_data: list[dict]) -> html.Table:
+        rows = []
+        full_counts = self._group_count(
+            [i["name"] for i in group_data], [i["count"] for i in group_data]
+        )
+        for count_nm, value_counts in full_counts.items():
+
+            rows.append(
+                html.Tr(
+                    [html.Th(i) for i in [count_nm.title()] + list(value_counts.keys())]
+                )
+            )
+            rows.append(
+                html.Tr([html.Td(i) for i in ["Count"] + list(value_counts.values())])
+            )
+
+        return html.Table(rows, style={"width": "100%", "font-size": "10pt"})
+
+    def delete_form(self) -> tuple[dbc.Modal, dbc.Button]:
+        name_search_id = f"{self.name}-delete-search-id"
+        delete_submit_button = f"{self.name}-delete-submit-button"
+        drop_down = _dcc_input(
+            DropDownType([i["name"] for i in self.data.values()]),
+            "Name Search",
+            name_search_id,
+        )
+
+        modal = dbc.Modal(
+            [
+                dbc.ModalHeader(dbc.ModalTitle(f"Delete {self.name}")),
+                dbc.ModalBody(drop_down),
+                dbc.ModalFooter(dbc.Button("Delete", delete_submit_button)),
+            ],
+            id=self.widget_ids["delete-modal"],
+            is_open=False,
+        )
+        button = dbc.Button(
+            f"Delete a {self.name}", id=self.widget_ids["delete-modal-button"]
+        )
+
+        @dash.callback(
+            dash.Output(self.widget_ids["delete-modal"], "is_open"),
+            dash.Output(self.widget_ids["datatable"], "data", allow_duplicate=True),
+            dash.Input(self.widget_ids["delete-modal-button"], "n_clicks"),
+            dash.Input(delete_submit_button, "n_clicks"),
+            dash.State(name_search_id, "value"),
+            prevent_initial_call=True,
+        )
+        def delete(n1, n2, value):
+            del n1, n2
+            trigger = dash.callback_context.triggered_id
+
+            if trigger == self.widget_ids["delete-modal-button"]:
+                return True, list(self.data.values())
+            if trigger != delete_submit_button:
+                raise ValueError(f"unknown trigger: {trigger}")
+
+            self.remove_data(value)
+
+            return False, list(self.data.values())
+
+        return modal, button
+
+    def create_group_table(self, column_width: int) -> tuple[dbc.Col, dbc.Button]:
         group = dash_table.DataTable(
             [],
             columns=[{"id": i, "name": i.title()} for i in ("name", "count")],
@@ -349,7 +437,7 @@ class DataTable:
         group_name_id = f"{self.name}-group-name"
         group_name = dbc.Input(group_name_id, placeholder="Enter Name of Group...")
         group_display_button_id = f"{self.name}-group-display-button"
-        group_display_button = dbc.Button("Display Group", id=group_display_button_id)
+        display_button = dbc.Button("Display Group", id=group_display_button_id)
 
         group_modal_display = dbc.Modal(
             id="group-modal-display", is_open=False, fullscreen=True
@@ -359,7 +447,7 @@ class DataTable:
             dash.Output("group-modal-display", "is_open"),
             dash.Output("group-modal-display", "children"),
             dash.Input(group_name_id, "value"),
-            dash.Input(group_display_button, "n_clicks"),
+            dash.Input(display_button, "n_clicks"),
             dash.State(self.widget_ids["group-table"], "data"),
             prevent_initial_call=True,
         )
@@ -373,7 +461,7 @@ class DataTable:
             for row in group_data:
                 data = self.get_data(row["name"])
 
-                html_body = self._html_data_display(data)
+                html_body = self._html_data_display(row | data)
                 lengths.append(len(html_body))
                 children.append(
                     dbc.Card(
@@ -400,6 +488,28 @@ class DataTable:
                 dbc.ModalBody(dbc.Row([dbc.Col(i) for i in cols.values()])),
             ]
 
+        group_col = dbc.Col(
+            [group_name, group, display_button, group_modal_display], width=column_width
+        )
+        return group_col
+
+    def create(self):
+        table = dash_table.DataTable(
+            [{"id": i, **j} for i, j in self.data.items()],
+            columns=[
+                {"id": i, "name": i.title()}
+                for i in self.template.schema
+                if i not in self.template.hidden_columns
+            ],
+            id=self.widget_ids["datatable"],
+            sort_action="native",
+            filter_action="native",
+            row_selectable=True,
+        )
+        modal, add_button = self.create_input_form()
+        group_col = self.create_group_table(column_width=2)
+        delete_modal, delete_button = self.delete_form()
+
         div = html.Div(
             [
                 dbc.Row(
@@ -408,17 +518,10 @@ class DataTable:
                         dbc.Col(html.H2("Group"), width=2),
                     ]
                 ),
-                dbc.Row(
-                    [dbc.Col(table, width=10), dbc.Col([group_name, group], width=2)]
-                ),
-                dbc.Row(
-                    [
-                        dbc.Col(add_button, width=10),
-                        dbc.Col(group_display_button, width=2),
-                    ]
-                ),
+                dbc.Row([dbc.Col(table, width=10), group_col]),
+                dbc.Row(dbc.Col([add_button, delete_button], width=10)),
                 modal,
-                group_modal_display,
+                delete_modal,
             ]
         )
 
