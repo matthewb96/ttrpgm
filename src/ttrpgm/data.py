@@ -149,8 +149,6 @@ class DataDashboard:
             "group-table": f"{self.name}-group-table",
         }
 
-        self.update_data("test", {"name": "test", "health": "10"})
-
     def check_data(self, name: str) -> bool:
         name = name.lower().strip()
         return name in self.data
@@ -159,6 +157,10 @@ class DataDashboard:
         return self.data[name.strip().lower()]
 
     def backup_database(self) -> None:
+        if not self.data_path.is_file():
+            warnings.warn("nothing to backup", RuntimeWarning)
+            return
+
         new_path = self.data_path.with_name(self.data_path.stem + ".backup")
         if new_path.is_file():
             new_path.unlink()
@@ -201,6 +203,7 @@ class DataDashboard:
             ),
         )
         children.append(
+            # TODO Dropdown needs updating when datatable is updated
             _dcc_input(
                 DropDownType([i["name"] for i in self.data.values()]),
                 "Name Search",
@@ -264,6 +267,7 @@ class DataDashboard:
 
         @dash.callback(
             dash.Output(self.widget_ids["modal"], "is_open"),
+            # TODO Use data store instead of outputting directly to datatable
             dash.Output(self.widget_ids["datatable"], "data"),
             dash.Output(message_id, "children"),
             [
@@ -407,6 +411,8 @@ class DataDashboard:
         return modal, button
 
     def create_group_table(self, column_width: int) -> tuple[dbc.Col, dbc.Button]:
+        # TODO Add button to save groups and drop-down box to select which group you want,
+        # this should then update the group table. Groups can probably be saved in another JSON file 
         group = dash_table.DataTable(
             [],
             columns=[{"id": i, "name": i.title()} for i in ("name", "count")],
@@ -454,11 +460,12 @@ class DataDashboard:
         def display_group(name, n_clicks, group_data):
             trigger = dash.callback_context.triggered_id
             if trigger == group_name_id or n_clicks == 0:
-                return False, []
+                return False, [] # TODO Replace with raise PreventUpdate
 
             children = []
             lengths = []
             for row in group_data:
+                row["count"] = int(row["count"])
                 data = self.get_data(row["name"])
 
                 html_body = self._html_data_display(row | data)
