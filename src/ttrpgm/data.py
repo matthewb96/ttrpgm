@@ -10,17 +10,14 @@ import json
 import logging
 import pathlib
 import re
-from typing import Any
+from typing import Any, Literal
 import warnings
 
 import caf.toolkit as ctk
-import dash
-import dash_bootstrap_components as dbc
-import dash_dangerously_set_inner_html
 import jinja2
 import markdown
+import pandas as pd
 import pydantic
-from dash import dash_table, dcc, html
 
 ##### CONSTANTS #####
 
@@ -91,36 +88,7 @@ class Template(ctk.BaseConfig):
         return new_values
 
 
-def _dcc_input(
-    type_: InputType | DropDownType,
-    name: str,
-    id_: str,
-    placeholder: str | None = None,
-    value: Any | None = None,
-    **kwargs,
-) -> dbc.Row:
-    if placeholder is None:
-        placeholder = f"Enter {name.title()}..."
-
-    if isinstance(type_, DropDownType):
-        widget = dcc.Dropdown(options=type_.options, value=value, id=id_, **kwargs)
-    elif type_ == InputType.TEXT:
-        widget = dbc.Input(
-            id_, value=value, placeholder=placeholder, type="text", **kwargs
-        )
-    elif type_ == InputType.INTEGER:
-        widget = dbc.Input(
-            id_, value=value, placeholder=placeholder, type="number", **kwargs
-        )
-    elif type_ == InputType.LONG_TEXT:
-        widget = dbc.Textarea(id_, value=value, placeholder=placeholder, **kwargs)
-    else:
-        raise ValueError(f"unknown type {type_}")
-
-    return dbc.Row([dbc.Label(name.title(), width=2), dbc.Col(widget, width=10)])
-
-
-class DataDashboard:
+class Data:
 
     def __init__(self, folder: pathlib.Path, template: Template) -> None:
 
@@ -128,33 +96,49 @@ class DataDashboard:
         self.name = template.name
         self.data_path = folder / f"data/{template.name}.json"
 
-        self.data: dict = {}
-        if self.data_path.is_file():
-            with open(self.data_path, "rt", encoding="utf-8") as file:
-                self.data = json.load(file)
-
+        self.load_data()
         template_env = jinja2.Environment(
             loader=jinja2.FileSystemLoader(folder / "templates")
         )
         self.display_template = template_env.get_template(f"{self.name}.html")
 
-        self.widget_ids = {
-            "submit-button": f"{self.name}-submit-button",
-            "input-values": f"{self.name}-input-value",
-            "datatable": f"{self.name}-datatable",
-            "modal-button": f"{self.name}-modal-button",
-            "modal": f"{self.name}-modal",
-            "delete-modal-button": f"{self.name}-delete-modal-button",
-            "delete-modal": f"{self.name}-delete-modal",
-            "group-table": f"{self.name}-group-table",
-        }
+    def load_data(self) -> None:
+        self.dataframe = pd.read_json(self.data_path, orient="index")
+        # TODO Validate columns
 
-    def check_data(self, name: str) -> bool:
-        name = name.lower().strip()
-        return name in self.data
+    def columns_to_display(self) -> dict[str, str]:
+        columns = {}
+        for col in self.dataframe:
+            if col in self.template.hidden_columns:
+                continue
+
+            columns[col] = str(col).strip().replace("_", " ").title()
+
+        return columns
+
+    @staticmethod
+    def name_to_id(name: str) -> str:
+        name = re.sub(r"[\s-_]+", "_", name.strip().lower())
+        name = re.sub(r"[!\"#$%&'()*+,-./:;<=>?@[\]\\^_`{|}~]", "", name, re.I)
+        return name
+
+    def check_data(
+        self, name: str, error: Literal["ignore", "raise", "warn"] = "ignore"
+    ) -> bool:
+        name = self.name_to_id(name)
+        check = name in self.dataframe.index
+
+        if error == "ignore" or check:
+            return check
+
+        msg = f"{name!r} isn't in data"
+        if error == "warn":
+            warnings.warn(msg, RuntimeWarning)
+        raise KeyError(msg)
 
     def get_data(self, name: str) -> dict:
-        return self.data[name.strip().lower()]
+        self.check_data(name, "raise")
+        return self.dataframe.loc[self.name_to_id(name)]
 
     def backup_database(self) -> None:
         if not self.data_path.is_file():
@@ -166,157 +150,30 @@ class DataDashboard:
             new_path.unlink()
         self.data_path.rename(new_path)
 
+    def save_data(self, backup: bool = True) -> None:
+        if backup:
+            self.backup_database()
+
+        self.dataframe.to_json(self.data_path, orient="index")
+
     def remove_data(self, name: str) -> None:
-        removed = self.data.pop(name, None)
-        if removed is None:
+        if not self.check_data(name):
             warnings.warn(f"{name!r} not in data so nothing is removed", RuntimeWarning)
             return
 
-        self.backup_database()
-        with open(self.data_path, "wt", encoding="utf-8") as file:
-            json.dump(self.data, file)
+        self.dataframe = self.dataframe.drop(index=self.name_to_id(name))
+        self.save_data()
 
-    def update_data(self, name: str, values: dict):
-        # TODO Add data validation
-        name = name.strip().lower()
-        self.data[name] = values
-
-        self.backup_database()
-        with open(self.data_path, "wt", encoding="utf-8") as file:
-            json.dump(self.data, file)
-
-    def create_input_form(self, values: dict[str, Any] | None = None):
-        children = []
-
-        add_edit_id = f"{self.name}-add-edit-check"
-        name_search_id = f"{self.name}-edit-search-id"
-
-        children.append(
-            dbc.RadioItems(
-                options=[
-                    {"label": f"Add a {self.name.title()}", "value": 1},
-                    {"label": f"Edit / View a {self.name.title()}", "value": 2},
-                ],
-                value=1,
-                id=add_edit_id,
-                inline=True,
-            ),
-        )
-        children.append(
-            # TODO Dropdown needs updating when datatable is updated
-            _dcc_input(
-                DropDownType([i["name"] for i in self.data.values()]),
-                "Name Search",
-                name_search_id,
-                disabled=True,
+    def add_data(self, name: str, values: dict, update: bool = False) -> None:
+        if not update and self.check_data(name):
+            raise KeyError(
+                f"data already present for {name!r}, consider updating instead"
             )
-        )
+        if update and not self.check_data(name):
+            raise KeyError(f"data for {name!r} isn't found, consider adding instead")
 
-        input_ids = {}
-        for name, type_ in self.template.schema.items():
-            id_ = self.widget_ids["input-values"] + f"-{name}"
-
-            if values is not None and name in values:
-                value = values[name]
-            else:
-                value = None
-
-            widget = _dcc_input(type_, name, id_, value=value)
-            children.append(widget)
-            input_ids[name] = id_
-
-        message_id = f"{self.name}-modal-message-label"
-        children.append(dbc.Label(id=message_id))
-
-        @dash.callback(
-            dash.Output(name_search_id, "disabled"),
-            dash.Output(input_ids["name"], "disabled"),
-            dash.Input(add_edit_id, "value"),
-        )
-        def disable_name(add_edit):
-            if add_edit == 1:
-                return True, False
-            return False, True
-
-        @dash.callback(
-            [dash.Output(i, "value") for i in input_ids.values()],
-            dash.Input(name_search_id, "value"),
-            prevent_initial_call=True,
-        )
-        def update_values(name):
-            data = self.get_data(name)
-            # Make sure the data is in the correct order for the outputs
-            return tuple(data.get(i) for i in input_ids)
-
-        modal = dbc.Modal(
-            [
-                dbc.ModalHeader(dbc.ModalTitle(f"Add {self.name}")),
-                dbc.ModalBody(dbc.Form(children)),
-                dbc.ModalFooter(
-                    dbc.Button("Submit", self.widget_ids["submit-button"], n_clicks=0)
-                ),
-            ],
-            id=self.widget_ids["modal"],
-            is_open=False,
-            size="xl",
-            scrollable=True,
-        )
-        button = dbc.Button(
-            f"Add, Edit or View a {self.name}", id=self.widget_ids["modal-button"]
-        )
-
-        @dash.callback(
-            dash.Output(self.widget_ids["modal"], "is_open"),
-            # TODO Use data store instead of outputting directly to datatable
-            dash.Output(self.widget_ids["datatable"], "data"),
-            dash.Output(message_id, "children"),
-            [
-                dash.Input(self.widget_ids["modal-button"], "n_clicks"),
-                dash.Input(self.widget_ids["submit-button"], "n_clicks"),
-            ],
-            dash.State(add_edit_id, "value"),
-            dash.State(name_search_id, "value"),
-            [dash.State(i, "value") for i in input_ids.values()],
-            prevent_initial_call=True,
-        )
-        def update(n1, n2, add_edit, search_name, *value):
-            del n1, n2, value
-            trigger = dash.callback_context.triggered_id
-
-            if trigger == self.widget_ids["modal-button"]:
-                return True, list(self.data.values()), ""
-            if trigger != self.widget_ids["submit-button"]:
-                raise ValueError(f"unknown trigger: {trigger}")
-
-            data = {}
-            for properties in dash.callback_context.args_grouping:
-                match = re.match(
-                    rf"{self.widget_ids['input-values']}-(\w+)", properties["id"], re.I
-                )
-                if match is None:
-                    continue
-
-                data[match.group(1)] = properties["value"]
-
-            if add_edit == 2:  # Edit mode use name from dropdown
-                data["name"] = search_name
-                message = f"Sucessfully updated {data['name']}"
-
-            elif add_edit == 1 and self.check_data(data["name"]):
-                # Add mode shouldn't overwrite
-                return (
-                    True,
-                    list(self.data.values()),
-                    f"{data['name']} already exists, switch to edit mode",
-                )
-            elif add_edit == 1:
-                message = f"Sucessfully added {data['name']}"
-
-            self.update_data(data["name"], data)
-
-            return False, list(self.data.values()), message
-
-        return modal, button
+        self.dataframe.loc[self.name_to_id(name)] = pd.Series(values)
+        self.save_data()
 
     def _html_data_display(self, data: dict[str, Any]) -> str:
         data = data.copy()
@@ -331,205 +188,3 @@ class DataDashboard:
                 data[name] = int(value)
 
         return self.display_template.render(**data)
-
-    def _group_count(
-        self, selected_ids: list[str], counts: list[str]
-    ) -> dict[str, dict[str, int]]:
-        value_count: dict[str, dict[str, int]] = collections.defaultdict(
-            lambda: collections.defaultdict(lambda: 0)
-        )
-
-        for name, count in zip(selected_ids, counts):
-            data = self.get_data(name)
-
-            for nm in self.template.group_count_columns:
-                value_count[nm][str(data.get(nm))] += int(count)
-
-        return value_count
-
-    def _group_count_table(self, group_data: list[dict]) -> html.Table:
-        rows = []
-        full_counts = self._group_count(
-            [i["name"] for i in group_data], [i["count"] for i in group_data]
-        )
-        for count_nm, value_counts in full_counts.items():
-
-            rows.append(
-                html.Tr(
-                    [html.Th(i) for i in [count_nm.title()] + list(value_counts.keys())]
-                )
-            )
-            rows.append(
-                html.Tr([html.Td(i) for i in ["Count"] + list(value_counts.values())])
-            )
-
-        return html.Table(rows, style={"width": "100%", "font-size": "10pt"})
-
-    def delete_form(self) -> tuple[dbc.Modal, dbc.Button]:
-        name_search_id = f"{self.name}-delete-search-id"
-        delete_submit_button = f"{self.name}-delete-submit-button"
-        drop_down = _dcc_input(
-            DropDownType([i["name"] for i in self.data.values()]),
-            "Name Search",
-            name_search_id,
-        )
-
-        modal = dbc.Modal(
-            [
-                dbc.ModalHeader(dbc.ModalTitle(f"Delete {self.name}")),
-                dbc.ModalBody(drop_down),
-                dbc.ModalFooter(dbc.Button("Delete", delete_submit_button)),
-            ],
-            id=self.widget_ids["delete-modal"],
-            is_open=False,
-        )
-        button = dbc.Button(
-            f"Delete a {self.name}", id=self.widget_ids["delete-modal-button"]
-        )
-
-        @dash.callback(
-            dash.Output(self.widget_ids["delete-modal"], "is_open"),
-            dash.Output(self.widget_ids["datatable"], "data", allow_duplicate=True),
-            dash.Input(self.widget_ids["delete-modal-button"], "n_clicks"),
-            dash.Input(delete_submit_button, "n_clicks"),
-            dash.State(name_search_id, "value"),
-            prevent_initial_call=True,
-        )
-        def delete(n1, n2, value):
-            del n1, n2
-            trigger = dash.callback_context.triggered_id
-
-            if trigger == self.widget_ids["delete-modal-button"]:
-                return True, list(self.data.values())
-            if trigger != delete_submit_button:
-                raise ValueError(f"unknown trigger: {trigger}")
-
-            self.remove_data(value)
-
-            return False, list(self.data.values())
-
-        return modal, button
-
-    def create_group_table(self, column_width: int) -> tuple[dbc.Col, dbc.Button]:
-        # TODO Add button to save groups and drop-down box to select which group you want,
-        # this should then update the group table. Groups can probably be saved in another JSON file 
-        group = dash_table.DataTable(
-            [],
-            columns=[{"id": i, "name": i.title()} for i in ("name", "count")],
-            id=self.widget_ids["group-table"],
-            sort_action="native",
-            filter_action="native",
-            editable=True,
-        )
-
-        @dash.callback(
-            dash.Output(self.widget_ids["group-table"], "data"),
-            dash.Input(self.widget_ids["datatable"], "selected_row_ids"),
-            dash.State(self.widget_ids["group-table"], "data"),
-            prevent_initial_call=True,
-        )
-        def update_group(selected_ids, current_data):
-            count_lookup = {i["name"]: i["count"] for i in current_data}
-
-            rows = []
-            for i in set(selected_ids):
-                if i is None:
-                    continue
-
-                name = self.get_data(i)["name"]
-                rows.append({"name": name, "count": count_lookup.get(name, 1)})
-            return rows
-
-        group_name_id = f"{self.name}-group-name"
-        group_name = dbc.Input(group_name_id, placeholder="Enter Name of Group...")
-        group_display_button_id = f"{self.name}-group-display-button"
-        display_button = dbc.Button("Display Group", id=group_display_button_id)
-
-        group_modal_display = dbc.Modal(
-            id="group-modal-display", is_open=False, fullscreen=True
-        )
-
-        @dash.callback(
-            dash.Output("group-modal-display", "is_open"),
-            dash.Output("group-modal-display", "children"),
-            dash.Input(group_name_id, "value"),
-            dash.Input(display_button, "n_clicks"),
-            dash.State(self.widget_ids["group-table"], "data"),
-            prevent_initial_call=True,
-        )
-        def display_group(name, n_clicks, group_data):
-            trigger = dash.callback_context.triggered_id
-            if trigger == group_name_id or n_clicks == 0:
-                return False, [] # TODO Replace with raise PreventUpdate
-
-            children = []
-            lengths = []
-            for row in group_data:
-                row["count"] = int(row["count"])
-                data = self.get_data(row["name"])
-
-                html_body = self._html_data_display(row | data)
-                lengths.append(len(html_body))
-                children.append(
-                    dbc.Card(
-                        [
-                            dbc.CardHeader(html.H5(data["name"])),
-                            dbc.CardBody(
-                                dash_dangerously_set_inner_html.DangerouslySetInnerHTML(
-                                    html_body
-                                )
-                            ),
-                        ]
-                    )
-                )
-
-            lengths = iter(lengths)
-            children = sorted(children, key=lambda x: next(lengths), reverse=True)
-            cols = {0: [], 1: []}
-            # TODO Fix grouping into rows
-            for i, widget in enumerate(children):
-                cols[i % 2].append(dbc.Row(widget))
-
-            return True, [
-                dbc.ModalHeader(html.H3(name)),
-                dbc.ModalBody(dbc.Row([dbc.Col(i) for i in cols.values()])),
-            ]
-
-        group_col = dbc.Col(
-            [group_name, group, display_button, group_modal_display], width=column_width
-        )
-        return group_col
-
-    def create(self):
-        table = dash_table.DataTable(
-            [{"id": i, **j} for i, j in self.data.items()],
-            columns=[
-                {"id": i, "name": i.title()}
-                for i in self.template.schema
-                if i not in self.template.hidden_columns
-            ],
-            id=self.widget_ids["datatable"],
-            sort_action="native",
-            filter_action="native",
-            row_selectable=True,
-        )
-        modal, add_button = self.create_input_form()
-        group_col = self.create_group_table(column_width=2)
-        delete_modal, delete_button = self.delete_form()
-
-        div = html.Div(
-            [
-                dbc.Row(
-                    [
-                        dbc.Col(html.H2(f"{self.name.title()} Data"), width=10),
-                        dbc.Col(html.H2("Group"), width=2),
-                    ]
-                ),
-                dbc.Row([dbc.Col(table, width=10), group_col]),
-                dbc.Row(dbc.Col([add_button, delete_button], width=10)),
-                modal,
-                delete_modal,
-            ]
-        )
-
-        return div
