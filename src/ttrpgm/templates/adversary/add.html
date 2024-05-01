@@ -1,0 +1,17 @@
+{% extends 'base.html' %}
+
+{% block header %}
+<h1>{% block title %}New Adversary{% endblock %}</h1>
+{% endblock %}
+
+{% block content %}
+<form method="post">
+    <label for="name">Name</label>
+    <input name="name" id="name" value="{{ request.form['name'] }}" required>
+    <label for="health">Health</label>
+    <input type="number" name="health" id="health" value="{{ request.form['health'] }}" required>
+    <label for="stress">Stress</label>
+    <input type="number" name="stress" id="stress" value="{{ request.form['stress'] }}" required>
+    <input type="submit" value="Save">
+</form>
+{% endblock %}

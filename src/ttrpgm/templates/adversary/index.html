@@ -1,0 +1,26 @@
+{% extends 'base.html' %}
+
+{% block header %}
+  <h1>{% block title %}Adversaries{% endblock %}</h1>
+  {% if g.user %}
+    <a class="action" href="{{ url_for('adversary.add') }}">New</a>
+  {% endif %}
+{% endblock %}
+
+{% block content %}
+  {% for adversary in adversaries %}
+    <article class="adversary">
+      <header>
+        <div>
+          <h1>{{ adversary['name'] }}</h1>
+          <div class="about">by {{ adversary['username'] }} on {{ adversary['created'].strftime('%Y-%m-%d') }}</div>
+        </div>
+        <a class="action" href="{{ url_for('adversary.update', id=adversary['id']) }}">Edit</a>
+      </header>
+      <p class="body">{{ adversary['health'] }}</p>
+    </article>
+    {% if not loop.last %}
+      <hr>
+    {% endif %}
+  {% endfor %}
+{% endblock %}
